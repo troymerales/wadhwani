@@ -1,7 +1,7 @@
 """Early Completion Warning System (EWS) - rule-based prototype.
 
-Pipeline: student records -> 3 pacing/engagement signals -> student risk
-category -> cohort (batch) and partner (institute) alert -> recommended action.
+Pipeline: student records → 3 pacing/engagement signals → student risk
+category → cohort (batch) and partner (institute) alert → recommended action.
 
 Run `python ews.py` to print a summary, run the self-check and write
 EWS_output.xlsx (the "model file").
@@ -12,18 +12,21 @@ import numpy as np
 import pandas as pd
 
 DATA = Path(__file__).parent / "Case Assignment - Sr Associate - Philippines - data.xlsx"
+KEEP = {"institute_name", "batch_id", "batch_name", "student_id", "country_name", "student_status_inbatch",
+        "batch_joined_date", "batch_start_date", "batch_end_date", "course_duration_hours.1", "hours_week",
+        "total_lessons_in_course", "total_lessons_completed_in_course", "average_quiz_score"}
 
 # ---- Thresholds (all in one place; review quarterly) -----------------------
 FAST_RATIO = 0.5        # finished in < 50% of planned duration
 COMPRESSED_DAYS = 2     # all assessments submitted on <= 2 distinct days
 LOW_LESSON_PCT = 0.5    # < 50% of lessons logged as completed
-COHORT_RED = 0.30       # >= 30% of completers High Risk -> Red
-COHORT_AMBER = 0.15     # >= 15% -> Amber
-MIN_COMPLETERS = 10     # fewer completers -> "Too small to rate"
+COHORT_RED = 0.30       # >= 30% of completers High Risk → Red
+COHORT_AMBER = 0.15     # >= 15% → Amber
+MIN_COMPLETERS = 10     # fewer completers → "Too small to rate"
 
 ACTIONS = {
-    "High Risk": "Hold graduate status -> verify records & re-assess sample -> review with partner",
-    "Watch": "Count as graduate -> spot-check 10% -> monitor next cycle",
+    "High Risk": "Hold graduate status → verify records & re-assess sample → review with partner",
+    "Watch": "Count as graduate → spot-check 10% → monitor next cycle",
     "On track": "No action",
 }
 COHORT_ACTIONS = {
@@ -36,6 +39,8 @@ COHORT_ACTIONS = {
 
 def load(path=DATA):
     df = pd.read_excel(path)
+    # Keep only what the EWS uses (129 → ~30 columns) to stay light on memory.
+    df = df[[c for c in df.columns if c in KEEP or c.startswith("Competency_quiz_submit_")]]
     # Scope: Philippines only (2 India records are a different course).
     df = df[df.country_name == "Philippines"].copy()
     subs = df.filter(regex=r"^Competency_quiz_submit_\d+$").apply(pd.to_datetime)
@@ -130,3 +135,20 @@ if __name__ == "__main__":
                 "planned_days", "pace_ratio", "assessment_days", "lesson_pct", "average_quiz_score", "action"]
         df[df.completed][cols].sort_values(["risk", "institute_name"]).to_excel(xw, sheet_name="Students", index=False)
     print("Wrote EWS_output.xlsx")
+
+    # Data for the React dashboard (web/). Rows as records; NaN → null.
+    s = df[df.completed][["student_id", "institute_name", "batch_id", "risk", "signals", "days_to_complete",
+                          "planned_days", "assessment_days", "lesson_pct", "average_quiz_score", "flag_fast"]]
+    out = {
+        "enrolled": len(df),
+        "thresholds": {"fast": FAST_RATIO, "compressed": COMPRESSED_DAYS, "lessons": LOW_LESSON_PCT,
+                       "red": COHORT_RED, "amber": COHORT_AMBER, "min": MIN_COMPLETERS},
+        "actions": ACTIONS, "cohortActions": COHORT_ACTIONS,
+        "partners": p.round(4).to_dict("records"),
+        "cohorts": c.round(4).to_dict("records"),
+        "students": s.round(4).to_dict("records"),
+    }
+    web = Path(__file__).parent / "web" / "src" / "ews.json"
+    web.parent.mkdir(parents=True, exist_ok=True)
+    web.write_text(pd.Series([out]).to_json(orient="records")[1:-1], encoding="utf-8")
+    print("Wrote", web)
